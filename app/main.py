@@ -34,11 +34,13 @@ async def upload_receipt(file: UploadFile = File(...)):
         # Datei einlesen (im Speicher) und Größe prüfen
         content = await file.read()
         size = len(content)
+        logger.info("UPLOAD: name=%s size=%d bytes", file.filename, size)
         if size > MAX_UPLOAD_MB * 1024 * 1024:
             raise HTTPException(status_code=413, detail="Datei zu groß")
 
         # Auf Disk speichern
         path = save_upload_to_disk(file.filename, content)
+        logger.info("UPLOAD: saved to %s", path)
 
         # Mimetype prüfen – robust mit Fallback
         try:
@@ -49,17 +51,20 @@ async def upload_receipt(file: UploadFile = File(...)):
                 mime = magic.Magic(mime=True).from_file(path)
             except Exception:
                 mime = "application/octet-stream"
+        logger.info("UPLOAD: mime=%s", mime)
         if not ("image" in mime or "pdf" in mime or file.filename.lower().endswith((".pdf", ".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp"))):
             raise HTTPException(status_code=415, detail=f"Nicht unterstützter Typ: {mime}")
 
         # OCR
+        logger.info("UPLOAD: calling OCR for %s", path)
         text = ocr_mod.ocr_file(path)
+        logger.info("UPLOAD: OCR returned len=%d", len(text or ""))
         if not text:
             logger.warning("OCR returned empty text for %s", path)
 
         # Parser-Infos (Store/Chain/Total)
         store_name, chain_name, total = parser_mod.parse_store_and_total(text or "")
-
+        logger.info("PARSE: store=%s chain=%s total=%s", store_name, chain_name, total)
 
         # Persistieren
         with SessionLocal() as db:
@@ -83,6 +88,7 @@ async def upload_receipt(file: UploadFile = File(...)):
             db.add(receipt)
             db.commit()
             db.refresh(receipt)
+            logger.info("DB: saved receipt id=%s file=%s total=%s", receipt.id, path, total)
 
         download_url = f"/files/{os.path.basename(path)}"
         return {"status": "ok", "receipt_id": receipt.id, "download_url": download_url, "parsed_total": total}
