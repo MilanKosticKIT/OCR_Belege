@@ -1,0 +1,10 @@
+fastapi==0.112.2
+uvicorn[standard]==0.30.6
+python-multipart==0.0.9
+pydantic==2.9.2
+SQLAlchemy==2.0.35
+alembic==1.13.2
+pytesseract==0.3.13
+Pillow==10.4.0
+python-magic==0.4.27
+pdf2image==1.17.0
