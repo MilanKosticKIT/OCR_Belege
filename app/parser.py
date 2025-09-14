@@ -28,6 +28,37 @@ TOTAL_PATTERNS: List[re.Pattern] = [
 ]
 
 
+def _rightmost_amount_in_line(line: str) -> Optional[float]:
+    """
+    Return the last amount-looking number in the line, or None.
+    Handles cases like: 'Total CHF               34.65'
+    """
+    # normalize weird spaces
+    line = line.replace("\u00A0", " ").replace("\u2007", " ").replace("\u202F", " ")
+    # look for all numbers with 2 decimals
+    matches = re.findall(r"([0-9]{1,6}[.,][0-9]{2})", line)
+    if matches:
+        raw = matches[-1].replace(",", ".")
+        try:
+            return float(raw)
+        except ValueError:
+            return None
+    return None
+
+
+def _parse_total_by_lines(text: str) -> Optional[float]:
+    """
+    Fallback: look for any line containing TOTAL/SUMME/etc. and
+    take the right-most amount on that line.
+    """
+    for raw_line in text.splitlines():
+        if re.search(r"(?i)\b(TOTAL|SUMME|GESAMT)\b", raw_line):
+            amt = _rightmost_amount_in_line(raw_line)
+            if amt is not None:
+                return amt
+    return None
+
+
 def _normalize_amount_to_float(s: str) -> Optional[float]:
     """
     Normalize strings like "1'234.56", "1 234,56", "1234,56", "1234.56" to float.
@@ -74,5 +105,8 @@ def parse_store_and_total(text: str) -> Tuple[Optional[str], Optional[str], Opti
         # pick the last match (highest start position)
         candidates.sort(key=lambda x: x[0])
         total = candidates[-1][1]
+    else:
+        # fallback: scan lines manually for right-aligned totals
+        total = _parse_total_by_lines(text)
 
     return store_name, chain_name, total

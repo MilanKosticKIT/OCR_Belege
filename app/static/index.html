@@ -1,10 +1,108 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <title>Title</title>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>OCR Belege – Upload & Übersicht</title>
+  <style>
+    :root { --gap: 12px; --border: #ddd; }
+    * { box-sizing: border-box; }
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin: 24px; }
+    .card { max-width: 920px; margin: 0 auto; padding: 16px; border: 1px solid var(--border); border-radius: 12px; }
+    .row { margin: var(--gap) 0; }
+    button { padding: .5rem 1rem; border-radius: 8px; border: 1px solid #444; background: #fff; cursor: pointer; }
+    .muted { color: #666; }
+    table { width: 100%; border-collapse: collapse; margin-top: 12px; }
+    th, td { border-bottom: 1px solid #eee; padding: .4rem .5rem; text-align: left; font-size: 14px; }
+    th { background: #fafafa; }
+    .details { margin-top: 1rem; padding: 1rem; border: 1px solid #eee; border-radius: 8px; background: #fafafa; }
+    pre { white-space: pre-wrap; word-wrap: break-word; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; line-height: 1.4; }
+    .nowrap { white-space: nowrap; }
+  </style>
 </head>
 <body>
+  <div class="card">
+    <h2>Beleg hochladen</h2>
+    <form id="f">
+      <div class="row"><input type="file" id="file" name="file" accept="image/*,.pdf" required /></div>
+      <div class="row"><button type="submit">Upload & OCR</button></div>
+    </form>
+    <div id="out" class="muted"></div>
 
+    <hr/>
+    <h3>Belege (neueste zuerst)</h3>
+    <div id="list" class="muted">Lade…</div>
+
+    <div id="details" class="details" style="display:none"></div>
+  </div>
+
+  <script>
+  const out = document.getElementById('out');
+  const listEl = document.getElementById('list');
+  const detailsEl = document.getElementById('details');
+
+  async function refreshList(){
+    try {
+      const res = await fetch('/api/receipts');
+      if(!res.ok){ listEl.textContent = 'Fehler beim Laden der Liste.'; return; }
+      const js = await res.json();
+      if(!js.items || js.items.length===0){ listEl.textContent = 'Noch keine Belege.'; return; }
+      const rows = js.items.map(r => `<tr>
+        <td class="nowrap">#${r.id}</td>
+        <td>${r.store?.chain || r.store?.name || '-'}</td>
+        <td class="nowrap">${(r.purchase_datetime||'').slice(0,19).replace('T',' ')}</td>
+        <td class="nowrap">${r.total ?? '-'}</td>
+        <td>${r.download_url ? `<a href="${r.download_url}" target="_blank" rel="noopener">Datei</a>` : '-'}</td>
+        <td><button data-id="${r.id}" class="view-btn">Details</button></td>
+      </tr>`).join('');
+      listEl.innerHTML = `<table><thead><tr><th>ID</th><th>Store</th><th>Datum</th><th>Total</th><th>Datei</th><th></th></tr></thead><tbody>${rows}</tbody></table>`;
+      listEl.querySelectorAll('.view-btn').forEach(btn => btn.addEventListener('click', (e)=>{
+        const id = e.currentTarget.getAttribute('data-id');
+        view(id);
+      }));
+    } catch(err){
+      listEl.textContent = 'Fehler: ' + err;
+    }
+  }
+
+  async function view(id){
+    detailsEl.style.display = 'block';
+    detailsEl.textContent = 'Lade Details…';
+    const res = await fetch('/api/receipts/'+id);
+    if(!res.ok){ detailsEl.textContent = 'Fehler beim Laden der Details'; return; }
+    const r = await res.json();
+    detailsEl.innerHTML = `
+      <div><strong>Receipt #${r.id}</strong></div>
+      <div class="muted">${r.purchase_datetime?.replace('T',' ').slice(0,19) || ''}</div>
+      <div>Store: ${r.store?.chain || r.store?.name || '-'}</div>
+      <div>Total: <strong>${r.total ?? '-'} ${r.currency || ''}</strong></div>
+      <div>Datei: ${r.download_url ? `<a href="${r.download_url}" target="_blank" rel="noopener">Öffnen</a>` : (r.source_file || '-')}</div>
+      <hr/>
+      <details open>
+        <summary>OCR-Text</summary>
+        <pre>${(r.raw_text||'').substring(0, 20000)}</pre>
+      </details>
+    `;
+  }
+
+  const f = document.getElementById('f');
+  f.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const file = document.getElementById('file').files[0];
+    if (!file) return;
+    const fd = new FormData();
+    fd.append('file', file);
+    out.textContent = 'Lade hoch…';
+    detailsEl.style.display = 'none';
+    const res = await fetch('/api/upload', { method: 'POST', body: fd });
+    if (!res.ok) { out.textContent = 'Fehler: ' + (await res.text()); return; }
+    const js = await res.json();
+    out.innerHTML = `OK – Receipt ID: ${js.receipt_id} • ${js.download_url ? `<a href="${js.download_url}" target="_blank" rel="noopener">Datei</a>` : ''}`;
+    await refreshList();
+    if(js.receipt_id){ view(js.receipt_id); }
+  });
+
+  refreshList();
+  </script>
 </body>
 </html>

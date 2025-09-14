@@ -1,5 +1,6 @@
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, FileResponse
+from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
 from app.database import Base, engine, SessionLocal
 from app import models
@@ -17,8 +18,14 @@ app = FastAPI(title="OCR Belege – Schritt 1")
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("ocr-belege")
 
+
 # DB erstellen (SQLite-Datei im gemounteten Volume)
 Base.metadata.create_all(bind=engine)
+
+# Serve uploaded files (download links)
+UPLOAD_DIR = "/data/uploads"
+os.makedirs(UPLOAD_DIR, exist_ok=True)
+app.mount("/files", StaticFiles(directory=UPLOAD_DIR), name="files")
 
 
 @app.post("/api/upload", response_model=None)
@@ -53,12 +60,6 @@ async def upload_receipt(file: UploadFile = File(...)):
         # Parser-Infos (Store/Chain/Total)
         store_name, chain_name, total = parser_mod.parse_store_and_total(text or "")
 
-        # Wenn kein Betrag erkannt wurde, dem Client melden (422)
-        if total is None:
-            raise HTTPException(
-                status_code=422,
-                detail="Der Betrag (Total) wurde nicht erkannt. Bitte Belegfoto/-PDF prüfen und erneut versuchen."
-            )
 
         # Persistieren
         with SessionLocal() as db:
@@ -83,8 +84,8 @@ async def upload_receipt(file: UploadFile = File(...)):
             db.commit()
             db.refresh(receipt)
 
-        return {"status": "ok", "receipt_id": receipt.id}
-
+        download_url = f"/files/{os.path.basename(path)}"
+        return {"status": "ok", "receipt_id": receipt.id, "download_url": download_url, "parsed_total": total}
     except HTTPException:
         # Durchreichen von kontrollierten API-Fehlern
         raise
@@ -93,54 +94,63 @@ async def upload_receipt(file: UploadFile = File(...)):
         logger.error("Upload failed: %s\n%s", e, traceback.format_exc())
         raise HTTPException(status_code=500, detail="Interner Fehler beim Verarbeiten des Belegs. Bitte Logs prüfen.")
 
+# List receipts endpoint
+@app.get("/api/receipts")
+def list_receipts(limit: int = 50, offset: int = 0):
+    """Listet Belege paginiert auf (neueste zuerst)."""
+    with SessionLocal() as db:
+        q = db.query(models.Receipt).order_by(models.Receipt.id.desc()).offset(offset).limit(limit)
+        rows = q.all()
+        data = []
+        for r in rows:
+            store = None
+            if r.store_id:
+                s = db.query(models.Store).get(r.store_id)
+                if s:
+                    store = {"id": s.id, "name": s.name, "chain": s.chain}
+            data.append({
+                "id": r.id,
+                "store": store,
+                "purchase_datetime": r.purchase_datetime.isoformat(),
+                "total": r.total,
+                "download_url": f"/files/{os.path.basename(r.source_file)}" if r.source_file else None,
+            })
+        return {"items": data, "count": len(data), "offset": offset, "limit": limit}
+
+# Receipt details endpoint
+@app.get("/api/receipts/{receipt_id}")
+def get_receipt(receipt_id: int):
+    with SessionLocal() as db:
+        r = db.query(models.Receipt).get(receipt_id)
+        if not r:
+            raise HTTPException(status_code=404, detail="Receipt not found")
+        store = None
+        if r.store_id:
+            s = db.query(models.Store).get(r.store_id)
+            if s:
+                store = {"id": s.id, "name": s.name, "chain": s.chain}
+        return {
+            "id": r.id,
+            "store": store,
+            "purchase_datetime": r.purchase_datetime.isoformat(),
+            "currency": r.currency,
+            "total": r.total,
+            "source_file": r.source_file,
+            "download_url": f"/files/{os.path.basename(r.source_file)}" if r.source_file else None,
+            "raw_text": r.raw_text,
+        }
+
+
 
 @app.get("/", response_class=HTMLResponse)
 def index_page():
-    return (
-        """
-        <!doctype html>
-        <html>
-        <head>
-          <meta charset="utf-8" />
-          <meta name="viewport" content="width=device-width, initial-scale=1" />
-          <title>OCR Belege – Upload</title>
-          <style>
-            body { font-family: system-ui, sans-serif; margin: 2rem; }
-            .card { max-width: 520px; padding: 1rem; border: 1px solid #ddd; border-radius: 12px; }
-            .row { margin: .5rem 0; }
-            button { padding: .5rem 1rem; border-radius: 8px; border: 1px solid #444; background: #fff; cursor: pointer; }
-            #out { margin-top: 1rem; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
-          </style>
-        </head>
-        <body>
-          <div class="card">
-            <h2>Beleg hochladen</h2>
-            <form id="f">
-              <div class="row"><input type="file" id="file" name="file" accept="image/*,.pdf" required /></div>
-              <div class="row"><button type="submit">Upload & OCR</button></div>
-            </form>
-            <div id="out"></div>
-          </div>
-          <script>
-          const f = document.getElementById('f');
-          const out = document.getElementById('out');
-          f.addEventListener('submit', async (e) => {
-            e.preventDefault();
-            const fd = new FormData();
-            const file = document.getElementById('file').files[0];
-            if (!file) return;
-            fd.append('file', file);
-            out.textContent = 'Lade hoch…';
-            const res = await fetch('/api/upload', { method: 'POST', body: fd });
-            if (!res.ok) { out.textContent = 'Fehler: ' + (await res.text()); return; }
-            const js = await res.json();
-            out.textContent = 'OK – Receipt ID: ' + js.receipt_id;
-          });
-          </script>
-        </body>
-        </html>
-        """
-    )
+    # Serve the UI from app/static/index.html so PyCharm/Compose share the same file
+    base_dir = os.path.dirname(__file__)
+    path = os.path.join(base_dir, "static", "index.html")
+    if not os.path.exists(path):
+        # Friendly hint if the file is missing
+        return HTMLResponse("<h3>index.html not found</h3><p>Please place your UI at app/static/index.html</p>", status_code=200)
+    return FileResponse(path)
 
 @app.get("/api/health")
 async def health():
