@@ -22,6 +22,16 @@ logger = logging.getLogger("ocr-belege")
 # DB erstellen (SQLite-Datei im gemounteten Volume)
 Base.metadata.create_all(bind=engine)
 
+# Ensure /data/debug exists when OCR_DEBUG_DUMP=1 and write a marker file
+if os.getenv("OCR_DEBUG_DUMP", "0") == "1":
+    try:
+        os.makedirs("/data/debug", exist_ok=True)
+        with open("/data/debug/._debug_enabled", "w") as f:
+            f.write("ok\n")
+        logger.info("DEBUG_DUMP enabled: /data/debug created and marker written")
+    except Exception as e:
+        logger.warning("Failed to init /data/debug: %s", e)
+
 # Serve uploaded files (download links)
 UPLOAD_DIR = "/data/uploads"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
@@ -59,6 +69,16 @@ async def upload_receipt(file: UploadFile = File(...)):
         logger.info("UPLOAD: calling OCR for %s", path)
         text = ocr_mod.ocr_file(path)
         logger.info("UPLOAD: OCR returned len=%d", len(text or ""))
+
+        if os.getenv("OCR_DEBUG_DUMP", "0") == "1":
+            try:
+                os.makedirs("/data/debug", exist_ok=True)
+                with open(f"/data/debug/receipt_{os.path.basename(path)}.txt", "w", encoding="utf-8") as f:
+                    f.write(text or "")
+                logger.info("DEBUG_DUMP: wrote /data/debug/receipt_%s.txt", os.path.basename(path))
+            except Exception as e:
+                logger.warning("DEBUG_DUMP: failed to write receipt text dump: %s", e)
+
         if not text:
             logger.warning("OCR returned empty text for %s", path)
 

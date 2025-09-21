@@ -7,6 +7,7 @@ services:
       - APP_ENV=production
       - DB_URL=sqlite:////data/ocr_belege.db
       - OCR_LANG=deu+eng
+      - OCR_DEBUG_DUMP=1
       - MAX_UPLOAD_MB=25
     volumes:
       - ./data:/data

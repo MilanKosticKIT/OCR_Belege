@@ -10,6 +10,41 @@ logger = logging.getLogger("ocr-belege")
 
 LANG = os.getenv("OCR_LANG", "deu+eng")
 
+DEBUG_DUMP = os.getenv("OCR_DEBUG_DUMP", "0") == "1"
+logger.info("OCR module loaded; DEBUG_DUMP=%s", DEBUG_DUMP)
+DEBUG_DIR = "/data/debug"
+
+def _ensure_debug_dir():
+    if DEBUG_DUMP:
+        try:
+            os.makedirs(DEBUG_DIR, exist_ok=True)
+            logger.info("DEBUG_DUMP: ensured %s", DEBUG_DIR)
+        except Exception as e:
+            logger.warning("DEBUG_DUMP: mkdir failed: %s", e)
+
+def _dump_image(img: Image.Image, name: str):
+    if not DEBUG_DUMP:
+        return
+    try:
+        _ensure_debug_dir()
+        path = os.path.join(DEBUG_DIR, name)
+        img.save(path)
+        logger.info("OCR: dumped image %s", path)
+    except Exception as e:
+        logger.warning("OCR: failed to dump image %s: %s", name, e)
+
+def _dump_text(name: str, text: str):
+    if not DEBUG_DUMP:
+        return
+    try:
+        _ensure_debug_dir()
+        path = os.path.join(DEBUG_DIR, name)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(text or "")
+        logger.info("OCR: dumped text %s len=%d", path, len(text or ""))
+    except Exception as e:
+        logger.warning("OCR: failed to dump text %s: %s", name, e)
+
 # --- OSD/rotation and band cropping helpers ---
 from pytesseract import image_to_osd
 
@@ -67,6 +102,7 @@ def _preprocess_for_ocr(img: Image.Image) -> Image.Image:
         g = g.filter(ImageFilter.SHARPEN)
         # simple binarization
         g = g.point(lambda p: 255 if p > 180 else 0)
+        _dump_image(g, "preprocessed.png")
         return g
     except Exception:
         return img
@@ -76,6 +112,8 @@ def ocr_image(img: Image.Image) -> str:
         # Normalize orientation first
         img = _auto_rotate(img)
 
+        _dump_image(img, "full.png")
+
         attempts = []
         base_cfg = "--oem 1 --psm 6 -c preserve_interword_spaces=1"
         attempts.append((img, base_cfg))
@@ -84,6 +122,7 @@ def ocr_image(img: Image.Image) -> str:
 
         # Right-band focused attempts to capture right-aligned prices/totals
         band = _right_band(img, 0.45)
+        _dump_image(band, "rightband.png")
         attempts.append((_preprocess_for_ocr(band), base_cfg + " -c tessedit_char_whitelist=0123456789.,:-CHFfrSFRFr"))
         attempts.append((_preprocess_for_ocr(band), "--oem 1 --psm 7 -c tessedit_char_whitelist=0123456789.,:-CHFfrSFRFr"))
 
@@ -96,6 +135,7 @@ def ocr_image(img: Image.Image) -> str:
                 logger.error("OCR: attempt %d failed: %s\n%s", i, e, traceback.format_exc())
                 txt = ""
             logger.info("OCR: attempt %d len=%d", i, len(txt))
+            _dump_image(im, f"attempt_{i}.png")
             if len(txt) > len(best):
                 best = txt
         logger.info("OCR: best len=%d", len(best))
@@ -106,6 +146,8 @@ def ocr_image(img: Image.Image) -> str:
 
 def ocr_file(path: str) -> str:
     """Supports PNG/JPG/PDF. Returns concatenated text."""
+    _ensure_debug_dir()
+    logger.info("OCR_DEBUG_DUMP active=%s", DEBUG_DUMP)
     try:
         ext = os.path.splitext(path)[1].lower()
         logger.info("OCR: start file path=%s ext=%s", path, ext)
@@ -131,12 +173,17 @@ def ocr_file(path: str) -> str:
                 logger.error("OCR: convert_from_path failed for %s: %s\n%s", path, e, traceback.format_exc())
                 return ""
             logger.info("OCR: PDF rendered pages=%d", len(pages))
+
+            for i, p in enumerate(pages, start=1):
+                _dump_image(p, f"{os.path.basename(path)}.page{i}.png")
+
             texts = []
             for i, p in enumerate(pages, start=1):
                 logger.info("OCR: page %d/%d", i, len(pages))
                 texts.append(ocr_image(p))
             out = "\n\n".join(texts)
             logger.info("OCR: done file=%s total_len=%d", path, len(out or ""))
+            _dump_text(f"{os.path.basename(path)}.ocr.txt", out)
             return out
         else:
             # Try as image fallback
